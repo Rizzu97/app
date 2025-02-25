@@ -10,8 +10,20 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     private var socket: Socket? = null
     private var isPlaying = AtomicBoolean(false)
     private var networkThread: Thread? = null
+    private var decoderThread: Thread? = null
     private var currentFrame: ByteArray? = null
     private var cameraProtocolType = 0 // 0 = standard, 1 = HTTP, 2 = RTSP, 3 = ONVIF
+    private var bufferSize = 4096 // Dimensione predefinita del buffer
+    
+    // Coda thread-safe per passare i dati tra i thread
+    private val dataQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>(100)
+    
+    fun setBufferSize(size: Int) {
+        if (size > 0) {
+            bufferSize = size
+            println("[DEBUG] Buffer size set to $bufferSize bytes")
+        }
+    }
     
     fun startPlayback(ip: String, port: Int, onFrame: (ByteArray) -> Unit) {
         if (isPlaying.get()) {
@@ -27,6 +39,7 @@ class VideoPlayer(private val decoder: VideoDecoder) {
             onFrame(jpegData)
         }
         
+        // Thread 1: Riceve i dati dalla rete e li mette nella coda
         networkThread = thread {
             try {
                 // Seleziona la porta in base al protocollo
@@ -75,6 +88,9 @@ class VideoPlayer(private val decoder: VideoDecoder) {
                     println("[DEBUG] Starting to read video stream")
                     println("[DEBUG] Input stream available bytes: ${inputStream.available()}")
                     
+                    // Utilizziamo la dimensione del buffer configurata
+                    val buffer = ByteArray(bufferSize)
+                    
                     // Seleziona il metodo di lettura in base al protocollo
                     when (cameraProtocolType) {
                         0 -> readStandardVideoStream(inputStream)
@@ -88,7 +104,35 @@ class VideoPlayer(private val decoder: VideoDecoder) {
                     isPlaying.set(false)
                 }
             } catch (e: Exception) {
-                println("[ERROR] Error in playback thread: ${e.message}")
+                println("[ERROR] Error in network thread: ${e.message}")
+                e.printStackTrace()
+                isPlaying.set(false)
+            }
+        }
+        
+        // Thread 2: Prende i dati dalla coda e li decodifica
+        decoderThread = thread {
+            try {
+                println("[DEBUG] Decoder thread started")
+                while (isPlaying.get()) {
+                    try {
+                        // Prende un elemento dalla coda, aspettando se necessario
+                        val nalUnit = dataQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        if (nalUnit != null) {
+                            // Decodifica l'unità NAL
+                            decoder.queueNalUnit(nalUnit)
+                        }
+                    } catch (e: InterruptedException) {
+                        // Interrotto, controlla se dobbiamo uscire
+                        if (!isPlaying.get()) break
+                    } catch (e: Exception) {
+                        println("[ERROR] Error processing NAL unit: ${e.message}")
+                        e.printStackTrace()
+                    }
+                }
+                println("[DEBUG] Decoder thread stopped")
+            } catch (e: Exception) {
+                println("[ERROR] Error in decoder thread: ${e.message}")
                 e.printStackTrace()
                 isPlaying.set(false)
             }
@@ -171,13 +215,13 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     }
     
     private fun readStandardVideoStream(inputStream: InputStream) {
-        val buffer = ByteArray(16384)
+        val buffer = ByteArray(bufferSize)
         val nalBuffer = ByteArray(1000000)
         var nalBufferPosition = 0
         var totalBytesRead = 0
         var framesProcessed = 0
         
-        println("[DEBUG] Starting to read standard video stream loop")
+        println("[DEBUG] Starting to read standard video stream loop with buffer size $bufferSize")
         
         // Aggiungi un flag per tracciare se abbiamo trovato l'inizio di un NAL
         var foundNalStart = false
@@ -209,7 +253,7 @@ class VideoPlayer(private val decoder: VideoDecoder) {
                         
                         // Abbiamo trovato l'inizio di un nuovo NAL
                         if (foundNalStart && nalBufferPosition > 4) {
-                            // Invia il NAL precedente al decoder
+                            // Crea una copia del NAL e aggiungila alla coda
                             val nalUnit = ByteArray(nalBufferPosition)
                             System.arraycopy(nalBuffer, 0, nalUnit, 0, nalBufferPosition)
                             
@@ -217,7 +261,11 @@ class VideoPlayer(private val decoder: VideoDecoder) {
                             val nalType = if (nalUnit.size > 4) nalUnit[4].toInt() and 0x1F else -1
                             println("[DEBUG] Found NAL unit of type $nalType with size $nalBufferPosition bytes")
                             
-                            decoder.queueNalUnit(nalUnit)
+                            // Invece di decodificare direttamente, aggiungiamo alla coda
+                            if (!dataQueue.offer(nalUnit, 100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                                println("[WARN] Queue full, dropping NAL unit")
+                            }
+                            
                             framesProcessed++
                         }
                         
@@ -241,7 +289,7 @@ class VideoPlayer(private val decoder: VideoDecoder) {
                 
                 // Stampa un log periodico
                 if (framesProcessed % 10 == 0 && framesProcessed > 0) {
-                    println("[DEBUG] Processed $framesProcessed NAL units so far")
+                    println("[DEBUG] Processed $framesProcessed NAL units so far, queue size: ${dataQueue.size}")
                 }
                 
             } catch (e: Exception) {
@@ -255,7 +303,10 @@ class VideoPlayer(private val decoder: VideoDecoder) {
         if (foundNalStart && nalBufferPosition > 4) {
             val nalUnit = ByteArray(nalBufferPosition)
             System.arraycopy(nalBuffer, 0, nalUnit, 0, nalBufferPosition)
-            decoder.queueNalUnit(nalUnit)
+            
+            // Aggiungi alla coda invece di decodificare direttamente
+            dataQueue.offer(nalUnit)
+            
             framesProcessed++
         }
         
@@ -263,7 +314,7 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     }
     
     private fun readHttpVideoStream(inputStream: InputStream) {
-        println("[DEBUG] Starting to read HTTP video stream")
+        println("[DEBUG] Starting to read HTTP video stream with buffer size $bufferSize")
         
         // Per i flussi HTTP, dobbiamo prima leggere l'intestazione HTTP
         val headerBuffer = StringBuilder()
@@ -364,9 +415,9 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     }
     
     private fun readChunkedHttpStream(inputStream: InputStream) {
-        println("[DEBUG] Reading chunked HTTP stream")
+        println("[DEBUG] Reading chunked HTTP stream with buffer size $bufferSize")
         
-        val buffer = ByteArray(16384)
+        val buffer = ByteArray(bufferSize)
         val nalBuffer = ByteArray(1000000)
         var nalBufferPosition = 0
         
@@ -410,9 +461,9 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     }
     
     private fun readFixedLengthHttpStream(inputStream: InputStream, contentLength: Int) {
-        println("[DEBUG] Reading fixed length HTTP stream: $contentLength bytes")
+        println("[DEBUG] Reading fixed length HTTP stream: $contentLength bytes with buffer size $bufferSize")
         
-        val buffer = ByteArray(16384)
+        val buffer = ByteArray(bufferSize)
         val nalBuffer = ByteArray(1000000)
         var nalBufferPosition = 0
         var bytesRemaining = contentLength
@@ -438,9 +489,9 @@ class VideoPlayer(private val decoder: VideoDecoder) {
     }
     
     private fun readContinuousHttpStream(inputStream: InputStream) {
-        println("[DEBUG] Reading continuous HTTP stream")
+        println("[DEBUG] Reading continuous HTTP stream with buffer size $bufferSize")
         
-        val buffer = ByteArray(16384)
+        val buffer = ByteArray(bufferSize)
         val nalBuffer = ByteArray(1000000)
         var nalBufferPosition = 0
         
@@ -495,6 +546,14 @@ class VideoPlayer(private val decoder: VideoDecoder) {
             println("[DEBUG] Waiting for network thread to finish")
             networkThread?.join(1000)  // Attendi al massimo 1 secondo
             networkThread = null
+            
+            println("[DEBUG] Waiting for decoder thread to finish")
+            decoderThread?.join(1000)  // Attendi al massimo 1 secondo
+            decoderThread = null
+            
+            // Svuota la coda
+            dataQueue.clear()
+            
         } catch (e: Exception) {
             println("[ERROR] Error stopping playback: ${e.message}")
             e.printStackTrace()

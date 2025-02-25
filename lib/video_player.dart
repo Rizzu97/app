@@ -61,6 +61,7 @@ class VideoPlayerState extends State<VideoPlayer> {
       final success = await platform.invokeMethod('initializeDecoder', {
         'width': 1920,
         'height': 1080,
+        'bufferSize': 4096,
       });
 
       print('initializeDecoder success: $success');
@@ -224,6 +225,7 @@ class VideoPlayerState extends State<VideoPlayer> {
       await platform.invokeMethod('startPlayback', {
         'ip': widget.deviceIp,
         'port': 40005,
+        'bufferSize': 4096,
       });
 
       setState(() {

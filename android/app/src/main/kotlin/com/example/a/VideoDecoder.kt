@@ -4,126 +4,141 @@ import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.media.Image
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicBoolean
 
-class VideoDecoder(private val surface: Surface) {
+class VideoDecoder(private val outputSurface: Surface) {
     private var mediaCodec: MediaCodec? = null
-    private val timeoutUs = 10000L
-    private val nalQueue = LinkedBlockingQueue<ByteArray>()
-    private var decoderThread: Thread? = null
-    private var isRunning = false
-    private var currentBitmap: Bitmap? = null
+    private var isInitialized = false
+    private var width = 1920
+    private var height = 1080
+    private var frameRendered = false
     private var frameCounter = 0
     
     // Callback per ricevere i frame decodificati
     var onFrameDecoded: ((ByteArray) -> Unit)? = null
     
+    // Coda interna per le unità NAL
+    private val nalQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>(50)
+    
+    // Thread per la decodifica
+    private var decoderThread: Thread? = null
+    private var isRunning = AtomicBoolean(false)
+    
     fun initialize(width: Int, height: Int): Boolean {
         try {
-            println("[DEBUG] Creating MediaCodec decoder")
+            this.width = width
+            this.height = height
+            
+            // Configura il MediaCodec
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            
             mediaCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            
-            println("[DEBUG] Creating MediaFormat")
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                // Aggiungi alcune configurazioni chiave
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, width * height)
-                setInteger(MediaFormat.KEY_PUSH_BLANK_BUFFERS_ON_STOP, 1)
-            }
-            
-            println("[DEBUG] Configuring MediaCodec")
-            mediaCodec?.configure(format, surface, null, 0)
-            
-            println("[DEBUG] Starting MediaCodec")
+            mediaCodec?.configure(format, outputSurface, null, 0)
             mediaCodec?.start()
             
-            println("[DEBUG] Starting decoder thread")
+            isInitialized = true
+            
+            // Avvia il thread di decodifica
             startDecoderThread()
             
-            println("[DEBUG] MediaCodec initialization completed successfully")
             return true
         } catch (e: Exception) {
-            println("[ERROR] MediaCodec initialization failed: ${e.message}")
+            println("[ERROR] Error initializing decoder: ${e.message}")
             e.printStackTrace()
             return false
         }
     }
     
     private fun startDecoderThread() {
-        isRunning = true
+        isRunning.set(true)
+        
         decoderThread = Thread {
-            println("[DEBUG] Decoder thread started")
-            while (isRunning) {
-                try {
-                    val nalUnit = nalQueue.poll()
-                    if (nalUnit != null) {
-                        decodeNalUnit(nalUnit)
-                    } else {
-                        // Piccola pausa per evitare di consumare troppa CPU
-                        Thread.sleep(5)
+            try {
+                println("[DEBUG] Decoder thread started")
+                
+                while (isRunning.get()) {
+                    try {
+                        // Prende un'unità NAL dalla coda
+                        val nalUnit = nalQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        if (nalUnit != null) {
+                            decodeNalUnit(nalUnit)
+                        }
+                    } catch (e: InterruptedException) {
+                        // Interrotto, controlla se dobbiamo uscire
+                        if (!isRunning.get()) break
+                    } catch (e: Exception) {
+                        println("[ERROR] Error in decoder thread: ${e.message}")
+                        e.printStackTrace()
                     }
-                } catch (e: Exception) {
-                    println("[ERROR] Error in decoder thread: ${e.message}")
-                    e.printStackTrace()
                 }
+                
+                println("[DEBUG] Decoder thread stopped")
+            } catch (e: Exception) {
+                println("[ERROR] Fatal error in decoder thread: ${e.message}")
+                e.printStackTrace()
             }
-            println("[DEBUG] Decoder thread stopped")
-        }.apply { start() }
+        }
+        
+        decoderThread?.start()
     }
     
-    fun queueNalUnit(data: ByteArray) {
-        nalQueue.offer(data)
+    fun queueNalUnit(nalUnit: ByteArray) {
+        if (!isInitialized) {
+            println("[ERROR] Decoder not initialized")
+            return
+        }
+        
+        // Aggiungi l'unità NAL alla coda
+        if (!nalQueue.offer(nalUnit, 100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            println("[WARN] Decoder queue full, dropping NAL unit")
+        }
     }
     
-    private fun decodeNalUnit(data: ByteArray) {
+    private fun decodeNalUnit(nalUnit: ByteArray) {
         try {
-            // Log del tipo di NAL per debug
-            val nalType = if (data.size > 4) data[4].toInt() and 0x1F else -1
-            println("[DEBUG] Decoding NAL unit of type $nalType with size ${data.size} bytes")
-            
-            val inputBufferIndex = mediaCodec?.dequeueInputBuffer(timeoutUs) ?: -1
-            if (inputBufferIndex >= 0) {
-                val inputBuffer = mediaCodec?.getInputBuffer(inputBufferIndex)
-                inputBuffer?.clear()
-                inputBuffer?.put(data)
-                
-                mediaCodec?.queueInputBuffer(inputBufferIndex, 0, data.size, System.nanoTime() / 1000, 0)
-                println("[DEBUG] Queued input buffer $inputBufferIndex with ${data.size} bytes")
-            } else {
-                println("[WARN] No input buffer available")
+            if (!isInitialized || mediaCodec == null) {
+                println("[ERROR] Decoder not initialized or MediaCodec is null")
+                return
             }
             
-            val bufferInfo = MediaCodec.BufferInfo()
-            var outputBufferIndex = mediaCodec?.dequeueOutputBuffer(bufferInfo, timeoutUs) ?: -1
-            
-            var frameRendered = false
-            while (outputBufferIndex >= 0) {
-                println("[DEBUG] Got output buffer $outputBufferIndex, size: ${bufferInfo.size}, flags: ${bufferInfo.flags}")
+            // Ottieni un buffer di input disponibile
+            val inputBufferIndex = mediaCodec!!.dequeueInputBuffer(10000)
+            if (inputBufferIndex >= 0) {
+                // Copia i dati nel buffer di input
+                val inputBuffer = mediaCodec!!.getInputBuffer(inputBufferIndex)
+                inputBuffer?.clear()
+                inputBuffer?.put(nalUnit)
                 
-                // Rilascia il buffer e visualizza il frame
-                mediaCodec?.releaseOutputBuffer(outputBufferIndex, true)
+                // Invia il buffer al decoder
+                mediaCodec!!.queueInputBuffer(inputBufferIndex, 0, nalUnit.size, System.currentTimeMillis(), 0)
+            }
+            
+            // Ottieni il buffer di output
+            val bufferInfo = MediaCodec.BufferInfo()
+            val outputBufferIndex = mediaCodec!!.dequeueOutputBuffer(bufferInfo, 10000)
+            
+            if (outputBufferIndex >= 0) {
+                // Rilascia il buffer di output per renderizzarlo sulla Surface
+                mediaCodec!!.releaseOutputBuffer(outputBufferIndex, true)
                 frameRendered = true
                 
-                // Attendi un po' per assicurarsi che il frame venga visualizzato
-                Thread.sleep(5)
-                
-                outputBufferIndex = mediaCodec?.dequeueOutputBuffer(bufferInfo, timeoutUs) ?: -1
-            }
-            
-            // Cattura il frame corrente come JPEG per inviarlo a Flutter
-            // Ma solo se abbiamo un callback impostato e un frame è stato effettivamente renderizzato
-            if (onFrameDecoded != null && frameRendered) {
-                // Attendi un po' per assicurarsi che il frame sia stato renderizzato sulla Surface
-                Thread.sleep(10)
-                
-                // Cattura il frame dalla telecamera invece di generare un'immagine di test
-                captureRealFrame()?.let { jpegData ->
-                    println("[DEBUG] Captured real frame, size: ${jpegData.size} bytes")
-                    onFrameDecoded?.invoke(jpegData)
+                // Cattura il frame dalla Surface e invialo tramite il callback
+                if (onFrameDecoded != null && frameRendered) {
+                    // Attendi un po' per assicurarsi che il frame sia stato renderizzato sulla Surface
+                    Thread.sleep(10)
+                    
+                    // Cattura il frame dalla telecamera invece di generare un'immagine di test
+                    captureRealFrame()?.let { jpegData ->
+                        println("[DEBUG] Captured real frame, size: ${jpegData.size} bytes")
+                        onFrameDecoded?.invoke(jpegData)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -202,19 +217,16 @@ class VideoDecoder(private val surface: Surface) {
     }
     
     fun release() {
-        println("[DEBUG] Releasing decoder resources")
-        isRunning = false
         try {
-            decoderThread?.join(1000)  // Attendi al massimo 1 secondo
+            isRunning.set(false)
+            decoderThread?.join(1000)
+            decoderThread = null
             
-            println("[DEBUG] Stopping MediaCodec")
             mediaCodec?.stop()
-            
-            println("[DEBUG] Releasing MediaCodec")
             mediaCodec?.release()
             mediaCodec = null
-            
-            println("[DEBUG] MediaCodec released successfully")
+            isInitialized = false
+            nalQueue.clear()
         } catch (e: Exception) {
             println("[ERROR] Error releasing decoder: ${e.message}")
             e.printStackTrace()

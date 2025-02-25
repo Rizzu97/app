@@ -78,7 +78,7 @@ class _HomePageState extends State<HomePage> {
                       child: TextField(
                         controller: _ipController,
                         decoration: const InputDecoration(
-                          labelText: 'Indirizzo IP della telecamera',
+                          labelText: 'Indirizzo I≤ della telecamera',
                           border: OutlineInputBorder(),
                         ),
                       ),

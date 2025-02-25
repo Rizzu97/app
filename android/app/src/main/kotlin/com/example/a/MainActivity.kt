@@ -45,8 +45,9 @@ class MainActivity: FlutterActivity() {
                         try {
                             val width = call.argument<Int>("width") ?: 1920
                             val height = call.argument<Int>("height") ?: 1080
+                            val bufferSize = call.argument<Int>("bufferSize") ?: 4096
                             
-                            println("Initializing decoder with width: $width, height: $height")
+                            println("Initializing decoder with width: $width, height: $height, buffer size: $bufferSize")
                             
                             val surfaceView = SurfaceView(this)
                             addContentView(
@@ -60,7 +61,7 @@ class MainActivity: FlutterActivity() {
                             surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
                                 override fun surfaceCreated(holder: SurfaceHolder) {
                                     println("[DEBUG] Surface created")
-                                    initializeDecoderWithSurface(holder.surface, width, height, result)
+                                    initializeDecoderWithSurface(holder.surface, width, height, bufferSize, result)
                                 }
                                 
                                 override fun surfaceChanged(holder: SurfaceHolder, 
@@ -88,11 +89,15 @@ class MainActivity: FlutterActivity() {
                             try {
                                 val ip = call.argument<String>("ip") ?: "192.168.1.1"
                                 val port = call.argument<Int>("port") ?: 40005
+                                val bufferSize = call.argument<Int>("bufferSize") ?: 4096
                                 
-                                println("[DEBUG] Starting playback from $ip:$port")
+                                println("[DEBUG] Starting playback from $ip:$port with buffer size $bufferSize")
                                 
                                 // Disattiva il generatore di frame di test quando inizia la riproduzione reale
                                 testFrameGeneratorActive = false
+                                
+                                // Imposta la dimensione del buffer
+                                videoPlayer?.setBufferSize(bufferSize)
                                 
                                 videoPlayer?.startPlayback(ip, port) { frame ->
                                     mainHandler.post {
@@ -247,7 +252,7 @@ class MainActivity: FlutterActivity() {
         // startTestFrameGenerator(flutterEngine)
     }
 
-    private fun initializeDecoderWithSurface(surface: Surface, width: Int, height: Int, result: MethodChannel.Result) {
+    private fun initializeDecoderWithSurface(surface: Surface, width: Int, height: Int, bufferSize: Int, result: MethodChannel.Result) {
         try {
             println("[DEBUG] Starting decoder initialization")
             
@@ -266,6 +271,10 @@ class MainActivity: FlutterActivity() {
                             // Crea l'istanza del player
                             videoPlayer = VideoPlayer(decoder)
                             println("[DEBUG] Created video player instance")
+                            
+                            // Dopo aver creato il videoPlayer, imposta la dimensione del buffer
+                            videoPlayer?.setBufferSize(bufferSize)
+                            
                             result.success(true)
                         } else {
                             result.error("INIT_FAILED", "Failed to initialize decoder", null)
