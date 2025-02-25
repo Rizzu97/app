@@ -59,8 +59,8 @@ class VideoPlayerState extends State<VideoPlayer> {
   Future<void> _initializePlayer() async {
     try {
       final success = await platform.invokeMethod('initializeDecoder', {
-        'width': 1920,
-        'height': 1080,
+        'width': 1280,
+        'height': 720,
         'bufferSize': 4096,
       });
 
@@ -68,7 +68,7 @@ class VideoPlayerState extends State<VideoPlayer> {
 
       setState(() {
         _isInitialized = success ?? false;
-        _videoSize = const Size(1920, 1080);
+        _videoSize = const Size(1280, 720);
         if (!_isInitialized) {
           _errorMessage = 'Impossibile inizializzare il decoder video';
         }

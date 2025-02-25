@@ -132,7 +132,7 @@ class VideoDecoder(private val outputSurface: Surface) {
                 // Cattura il frame dalla Surface e invialo tramite il callback
                 if (onFrameDecoded != null && frameRendered) {
                     // Attendi un po' per assicurarsi che il frame sia stato renderizzato sulla Surface
-                    Thread.sleep(10)
+
                     
                     // Cattura il frame dalla telecamera invece di generare un'immagine di test
                     captureRealFrame()?.let { jpegData ->
