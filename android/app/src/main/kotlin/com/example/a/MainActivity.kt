@@ -33,6 +33,8 @@ class MainActivity: FlutterActivity() {
     )
     private val PERMISSION_REQUEST_CODE = 123
 
+    private var buttonListener: ButtonListener? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
@@ -97,8 +99,31 @@ class MainActivity: FlutterActivity() {
                                 testFrameGeneratorActive = false
                                 
                                 // Imposta la dimensione del buffer
-                                videoPlayer?.setBufferSize(bufferSize)
+                                Value of type 'fd_set' has no member '__fds_bits'Player?.setBufferSize(bufferSize)
                                 
+                                // Ferma il listener precedente se esiste
+                                buttonListener?.stopListening()
+                                buttonListener = null
+                                
+                                // Avvia il listener del pulsante
+                                println("[DEBUG] Creating button listener for $ip")
+                                buttonListener = ButtonListener(ip)
+                                buttonListener?.onButtonPressed = {
+                                    println("[DEBUG] Button press event received in MainActivity")
+                                    mainHandler.post {
+                                        try {
+                                            println("[DEBUG] Sending button press event to Flutter")
+                                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                                                .invokeMethod("onButtonPressed", null)
+                                        } catch (e: Exception) {
+                                            Log.e("ButtonListener", "Error sending button event", e)
+                                        }
+                                    }
+                                }
+                                println("[DEBUG] Starting button listener")
+                                buttonListener?.startListening()
+                                
+                                // Avvia la riproduzione video
                                 videoPlayer?.startPlayback(ip, port) { frame ->
                                     mainHandler.post {
                                         try {
@@ -122,6 +147,8 @@ class MainActivity: FlutterActivity() {
                         Thread {
                             try {
                                 videoPlayer?.stopPlayback()
+                                buttonListener?.stopListening()
+                                buttonListener = null
                                 mainHandler.post { result.success(true) }
                             } catch (e: Exception) {
                                 println("[ERROR] Error stopping playback: ${e.message}")
@@ -361,6 +388,8 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun onDestroy() {
+        buttonListener?.stopListening()
+        buttonListener = null
         releaseDecoder()
         super.onDestroy()
     }

@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'video_player.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const MyApp());
@@ -43,20 +47,34 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _initSavePath() async {
     try {
-      final directory = await getExternalStorageDirectory();
+      final Directory directory;
+      if (Platform.isIOS) {
+        directory = await getApplicationDocumentsDirectory();
+      } else if (Platform.isMacOS) {
+        // Su macOS, usa la directory Documents dell'utente
+        directory = await getApplicationDocumentsDirectory();
+      } else {
+        // Android e altre piattaforme
+        directory = (await getExternalStorageDirectory())!;
+      }
+
       setState(() {
-        _savePath = directory?.path;
+        _savePath = directory.path;
         _isLoading = false;
       });
+
+      print("Path di salvataggio: $_savePath");
     } catch (e) {
       setState(() {
         _isLoading = false;
+        _savePath = null; // Imposta esplicitamente a null in caso di errore
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Errore: $e')),
+          SnackBar(content: Text('Errore accesso storage: $e')),
         );
       }
+      print("Errore accesso storage: $e");
     }
   }
 
@@ -112,6 +130,93 @@ class _HomePageState extends State<HomePage> {
                         'È possibile catturare fotogrammi e salvarli nella memoria del dispositivo.',
                         textAlign: TextAlign.center,
                       ),
+                    ),
+                    ElevatedButton(
+                      onPressed: () async {
+                        try {
+                          final result = await const MethodChannel(
+                                  'com.example.video_decoder')
+                              .invokeMethod('initializeDecoder', {
+                            'width': 640,
+                            'height': 480,
+                            'bufferSize': 4096,
+                          });
+                          print("Risultato inizializzazione: $result");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                                content: Text('Inizializzazione: $result')),
+                          );
+                        } catch (e) {
+                          print("Errore inizializzazione: $e");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Errore: $e')),
+                          );
+                        }
+                      },
+                      child: const Text('Test Inizializzazione'),
+                    ),
+                    ElevatedButton(
+                      onPressed: () async {
+                        try {
+                          final result = await const MethodChannel(
+                                  'com.example.video_decoder')
+                              .invokeMethod('checkStatus');
+                          print("Stato: $result");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Stato: $result')),
+                          );
+                        } catch (e) {
+                          print("Errore: $e");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Errore: $e')),
+                          );
+                        }
+                      },
+                      child: const Text('Verifica Stato'),
+                    ),
+                    ElevatedButton(
+                      onPressed: () async {
+                        try {
+                          final result = await const MethodChannel(
+                                  'com.example.video_decoder')
+                              .invokeMethod('testConnection', {
+                            'ip': _ipController.text,
+                          });
+                          print("Test connessione: $result");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                                content: Text('Test connessione: $result')),
+                          );
+                        } catch (e) {
+                          print("Errore test connessione: $e");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                                content: Text('Errore test connessione: $e')),
+                          );
+                        }
+                      },
+                      child: const Text('Test Connessione'),
+                    ),
+                    ElevatedButton(
+                      onPressed: () async {
+                        try {
+                          final result = await const MethodChannel(
+                                  'com.example.video_decoder')
+                              .invokeMethod('pingHost', {
+                            'ip': _ipController.text,
+                          });
+                          print("Ping: $result");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Ping: $result')),
+                          );
+                        } catch (e) {
+                          print("Errore ping: $e");
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Errore ping: $e')),
+                          );
+                        }
+                      },
+                      child: const Text('Ping Host'),
                     ),
                   ],
                 ),

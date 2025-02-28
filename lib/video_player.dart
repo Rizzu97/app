@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 
 class VideoPlayer extends StatefulWidget {
   final String deviceIp;
@@ -28,29 +30,23 @@ class VideoPlayerState extends State<VideoPlayer> {
   bool _isPlaying = false;
   bool _isInitialized = false;
   String? _errorMessage;
-
-  // Dimensioni del video
-  Size? _videoSize;
-
-  // Aggiungi questa variabile
-  String _currentProtocol = "Standard";
-
-  // Aggiungi questa variabile
-  int _protocolIndex = 0;
-
-  // Aggiungi queste variabili alla classe VideoPlayerState
-  Timer? _frameUpdateTimer;
-  bool _autoUpdateEnabled = false;
+  late String _deviceIp;
 
   @override
   void initState() {
     super.initState();
+    _deviceIp = widget.deviceIp;
     _initializePlayer();
 
     // Ascolta i frame in arrivo dal canale nativo
     platform.setMethodCallHandler((call) async {
       if (call.method == 'onFrame' && call.arguments is Uint8List) {
         _frameController.add(call.arguments);
+      } else if (call.method == 'onButtonPressed') {
+        // Mostra un alert quando il pulsante viene premuto
+        if (mounted) {
+          _showButtonPressedAlert();
+        }
       }
       return null;
     });
@@ -59,16 +55,15 @@ class VideoPlayerState extends State<VideoPlayer> {
   Future<void> _initializePlayer() async {
     try {
       final success = await platform.invokeMethod('initializeDecoder', {
-        'width': 1280,
-        'height': 720,
-        'bufferSize': 4096,
+        'width': 1920, // Aumentato per una migliore risoluzione
+        'height': 1080, // Aumentato per una migliore risoluzione
+        'bufferSize': 8192, // Aumentato per gestire più dati
       });
 
       print('initializeDecoder success: $success');
 
       setState(() {
         _isInitialized = success ?? false;
-        _videoSize = const Size(1280, 720);
         if (!_isInitialized) {
           _errorMessage = 'Impossibile inizializzare il decoder video';
         }
@@ -87,6 +82,7 @@ class VideoPlayerState extends State<VideoPlayer> {
       children: [
         Expanded(
           child: Container(
+            width: double.infinity, // Usa tutta la larghezza disponibile
             color: Colors.black,
             child: Center(
               child: _buildVideoView(),
@@ -110,132 +106,83 @@ class VideoPlayerState extends State<VideoPlayer> {
       return const CircularProgressIndicator();
     }
 
-    return AspectRatio(
-      aspectRatio: _videoSize?.aspectRatio ?? 16 / 9,
-      child: StreamBuilder<Uint8List>(
-        stream: _frameController.stream,
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return Container(
-              color: Colors.black,
-              child: const Center(
-                child: Text(
-                  'In attesa del video...',
-                  style: TextStyle(color: Colors.white),
-                ),
+    return StreamBuilder<Uint8List>(
+      stream: _frameController.stream,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return Container(
+            color: Colors.black,
+            child: const Center(
+              child: Text(
+                'In attesa del video...',
+                style: TextStyle(color: Colors.white, fontSize: 24),
               ),
-            );
-          }
-
-          print('Received frame with size: ${snapshot.data!.length} bytes');
-
-          // Visualizza l'immagine
-          return Image.memory(
-            snapshot.data!,
-            gaplessPlayback: true, // Importante per evitare flickering
-            fit: BoxFit.contain,
+            ),
           );
-        },
-      ),
+        }
+
+        // Visualizza l'immagine a schermo intero
+        return Image.memory(
+          snapshot.data!,
+          gaplessPlayback: true, // Importante per evitare flickering
+          fit: BoxFit.contain,
+          width: double.infinity,
+          height: double.infinity,
+        );
+      },
     );
   }
 
   Widget _buildControls() {
     return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Column(
-        children: [
-          // Mostra il protocollo attuale
-          Text(
-            "Protocollo: $_currentProtocol",
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              ElevatedButton(
-                onPressed: _isInitialized ? _togglePlayback : null,
-                child: Text(_isPlaying ? 'Stop' : 'Play'),
-              ),
-              ElevatedButton(
-                onPressed: _isInitialized ? _captureFrame : null,
-                child: const Text('Cattura Frame'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              ElevatedButton(
-                onPressed: _isInitialized ? _switchProtocol : null,
-                child: const Text('Cambia Protocollo'),
-              ),
-              ElevatedButton(
-                onPressed: _isInitialized ? _restartPlayer : null,
-                child: const Text('Riavvia'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              ElevatedButton(
-                onPressed:
-                    _isInitialized ? () => _toggleTestFrames(false) : null,
-                child: const Text('Disattiva Test'),
-              ),
-              ElevatedButton(
-                onPressed: _isInitialized ? _forceFrameUpdate : null,
-                child: const Text('Aggiorna Frame'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: _isInitialized ? _toggleAutoUpdate : null,
-            child: Text(_autoUpdateEnabled ? 'Auto OFF' : 'Auto ON'),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _emergencyReset,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('RESET DI EMERGENZA'),
-          ),
-        ],
+      padding: const EdgeInsets.all(16.0),
+      child: ElevatedButton(
+        onPressed: _togglePlayback,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _isPlaying ? Colors.red : Colors.green,
+          foregroundColor: Colors.white,
+          minimumSize: const Size(double.infinity, 60), // Pulsante più grande
+          textStyle: const TextStyle(fontSize: 20), // Testo più grande
+        ),
+        child: Text(_isPlaying ? 'STOP' : 'PLAY'),
       ),
     );
   }
 
-  void _togglePlayback() {
+  Future<void> _togglePlayback() async {
     if (_isPlaying) {
-      _stopPlayback();
+      await _stopPlayback();
     } else {
-      _startPlayback();
+      await _startPlayback();
     }
   }
 
   Future<void> _startPlayback() async {
     try {
-      await platform.invokeMethod('startPlayback', {
-        'ip': widget.deviceIp,
+      final result = await platform.invokeMethod('startPlayback', {
+        'ip': _deviceIp,
         'port': 40005,
-        'bufferSize': 4096,
+        'bufferSize': 8192,
       });
 
+      print('startPlayback result: $result');
+
       setState(() {
-        _isPlaying = true;
-        _errorMessage = null;
+        _isPlaying = result ?? false;
       });
+
+      if (!_isPlaying && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Impossibile avviare la riproduzione')),
+        );
+      }
     } on PlatformException catch (e) {
-      setState(() {
-        _errorMessage = 'Impossibile avviare la riproduzione: ${e.message}';
-      });
+      print('Error starting playback: ${e.message}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Errore: ${e.message}')),
+        );
+      }
     }
   }
 
@@ -245,190 +192,25 @@ class VideoPlayerState extends State<VideoPlayer> {
       setState(() {
         _isPlaying = false;
       });
-    } on PlatformException catch (e) {
-      debugPrint('Errore nell\'arresto della riproduzione: ${e.message}');
-    }
-  }
-
-  Future<void> _captureFrame() async {
-    try {
-      final frame = await platform.invokeMethod('captureFrame');
-
-      if (frame == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content:
-                  Text('Impossibile catturare il frame: nessun dato ricevuto')),
-        );
-        return;
-      }
-
-      final timestamp = DateTime.now();
-      final fileName = _generateFileName(timestamp);
-
-      await platform.invokeMethod('saveFrame', {
-        'data': frame,
-        'path': '${widget.savePath}/$fileName',
-      });
-
-      if (mounted) {
-        // Aggiorna anche la visualizzazione con il frame catturato
-        _frameController.add(frame);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Frame catturato: $fileName')),
-        );
-      }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Impossibile catturare il frame: $e')),
-        );
-      }
+      print('Error stopping playback: $e');
     }
   }
 
-  Future<void> _testFrame() async {
-    try {
-      final frame = await platform.invokeMethod('captureFrame');
-      if (frame != null) {
-        _frameController.add(frame);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Frame di test visualizzato')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore: $e')),
-      );
-    }
-  }
-
-  Future<void> _restartPlayer() async {
-    await _stopPlayback();
-    await _initializePlayer();
-  }
-
-  Future<void> _switchProtocol() async {
-    try {
-      await platform.invokeMethod('switchProtocol');
-
-      // Aggiorna il nome del protocollo
-      setState(() {
-        _protocolIndex = (_protocolIndex + 1) % 4;
-        _currentProtocol =
-            ["Standard", "HTTP", "RTSP", "ONVIF"][_protocolIndex];
-      });
-
-      if (_isPlaying) {
-        await _stopPlayback();
-        await _startPlayback();
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text('Protocollo telecamera cambiato a $_currentProtocol')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore: $e')),
-      );
-    }
-  }
-
-  Future<void> _toggleTestFrames(bool enable) async {
-    try {
-      await platform.invokeMethod('enableTestFrames', {'enable': enable});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text(enable
-                ? 'Frame di test attivati'
-                : 'Frame di test disattivati')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore: $e')),
-      );
-    }
-  }
-
-  Future<void> _forceFrameUpdate() async {
-    try {
-      await platform.invokeMethod('forceFrameUpdate');
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Errore nell\'aggiornamento del frame: $e')),
-      );
-    }
-  }
-
-  // Aggiungi questo metodo per attivare/disattivare l'aggiornamento automatico
-  void _toggleAutoUpdate() {
-    setState(() {
-      _autoUpdateEnabled = !_autoUpdateEnabled;
-
-      if (_autoUpdateEnabled) {
-        // Avvia il timer per aggiornare il frame ogni 100ms
-        _frameUpdateTimer =
-            Timer.periodic(const Duration(milliseconds: 100), (timer) {
-          if (_isPlaying && _isInitialized) {
-            _forceFrameUpdate();
-          }
-        });
-      } else {
-        // Ferma il timer
-        _frameUpdateTimer?.cancel();
-        _frameUpdateTimer = null;
-      }
-    });
-
+  // Aggiungiamo un metodo per mostrare l'alert
+  void _showButtonPressedAlert() {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(_autoUpdateEnabled
-            ? 'Aggiornamento automatico attivato'
-            : 'Aggiornamento automatico disattivato'),
+      const SnackBar(
+        content: Text('Bottone premuto!'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
       ),
     );
-  }
-
-  String _generateFileName(DateTime timestamp) {
-    return '${timestamp.year}'
-        '${timestamp.month.toString().padLeft(2, '0')}'
-        '${timestamp.day.toString().padLeft(2, '0')}'
-        '${timestamp.hour.toString().padLeft(2, '0')}'
-        '${timestamp.minute.toString().padLeft(2, '0')}'
-        '${timestamp.second.toString().padLeft(2, '0')}.jpg';
-  }
-
-  Future<void> _emergencyReset() async {
-    try {
-      // Ferma la riproduzione
-      await _stopPlayback();
-
-      // Rilascia tutte le risorse
-      await platform.invokeMethod('dispose');
-
-      // Attendi un momento
-      await Future.delayed(const Duration(seconds: 1));
-
-      // Reinizializza il player
-      await _initializePlayer();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Reset di emergenza completato')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Reset di emergenza fallito: $e')),
-      );
-    }
   }
 
   @override
   void dispose() {
     _stopPlayback();
-    _frameUpdateTimer?.cancel();
     _frameController.close();
     platform.invokeMethod('dispose');
     super.dispose();
