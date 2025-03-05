@@ -14,6 +14,9 @@
 		348761B62D7896F2005E45F5 /* VideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761B32D7896F2005E45F5 /* VideoPlayer.swift */; };
 		348761B72D7896F2005E45F5 /* ImageSaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761B02D7896F2005E45F5 /* ImageSaver.swift */; };
 		348761B82D7896F2005E45F5 /* ButtonListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761AF2D7896F2005E45F5 /* ButtonListener.swift */; };
+		348761BA2D78B790005E45F5 /* AVCCDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761B92D78B790005E45F5 /* AVCCDecoder.swift */; };
+		348761BC2D78B895005E45F5 /* VideoSocketServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761BB2D78B895005E45F5 /* VideoSocketServer.swift */; };
+		348761BE2D78BBB1005E45F5 /* Socket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348761BD2D78BBB1005E45F5 /* Socket.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
@@ -56,6 +59,9 @@
 		348761B12D7896F2005E45F5 /* NetworkUtility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkUtility.swift; sourceTree = "<group>"; };
 		348761B22D7896F2005E45F5 /* VideoDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDecoder.swift; sourceTree = "<group>"; };
 		348761B32D7896F2005E45F5 /* VideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayer.swift; sourceTree = "<group>"; };
+		348761B92D78B790005E45F5 /* AVCCDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVCCDecoder.swift; sourceTree = "<group>"; };
+		348761BB2D78B895005E45F5 /* VideoSocketServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoSocketServer.swift; sourceTree = "<group>"; };
+		348761BD2D78BBB1005E45F5 /* Socket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Socket.swift; sourceTree = "<group>"; };
 		39A4879B8DD3A17867DBDC61 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		6C6F4A79BDBD7DEE3F2AC6F4 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -140,6 +146,9 @@
 		97C146F01CF9000F007C117D /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				348761BD2D78BBB1005E45F5 /* Socket.swift */,
+				348761BB2D78B895005E45F5 /* VideoSocketServer.swift */,
+				348761B92D78B790005E45F5 /* AVCCDecoder.swift */,
 				348761AF2D7896F2005E45F5 /* ButtonListener.swift */,
 				348761B02D7896F2005E45F5 /* ImageSaver.swift */,
 				348761B12D7896F2005E45F5 /* NetworkUtility.swift */,
@@ -393,11 +402,14 @@
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
+				348761BE2D78BBB1005E45F5 /* Socket.swift in Sources */,
 				348761B42D7896F2005E45F5 /* VideoDecoder.swift in Sources */,
+				348761BC2D78B895005E45F5 /* VideoSocketServer.swift in Sources */,
 				348761B52D7896F2005E45F5 /* NetworkUtility.swift in Sources */,
 				348761B62D7896F2005E45F5 /* VideoPlayer.swift in Sources */,
 				348761B72D7896F2005E45F5 /* ImageSaver.swift in Sources */,
 				348761B82D7896F2005E45F5 /* ButtonListener.swift in Sources */,
+				348761BA2D78B790005E45F5 /* AVCCDecoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

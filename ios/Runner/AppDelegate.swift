@@ -5,7 +5,7 @@ import AVFoundation
 @UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
     private let CHANNEL = "com.example.video_decoder"
-    private var videoDecoder: VideoDecoder?
+    private var avccDecoder: AVCCDecoder?
     private var videoPlayer: VideoPlayer?
     private var testFrameGeneratorActive = false
     private var buttonListener: ButtonListener?
@@ -30,174 +30,43 @@ import AVFoundation
             guard let self = self else { return }
             
             switch call.method {
-            case "initializeDecoder":
-                do {
-                    let arguments = call.arguments as? [String: Any]
-                    let width = arguments?["width"] as? Int32 ?? 1920
-                    let height = arguments?["height"] as? Int32 ?? 1080
-                    let bufferSize = arguments?["bufferSize"] as? Int ?? 4096
-                    
-                    NSLog("Initializing decoder with width: \(width), height: \(height), buffer size: \(bufferSize)")
-                    
-                    // Crea una view per l'output video se non esiste
-                    if self.videoView == nil {
-                        self.createVideoView(controller: controller)
-                    }
-                    
-                    self.initializeDecoder(width: width, height: height, bufferSize: bufferSize, result: result)
-                } catch {
-                    NSLog("[ERROR] Initialization error: \(error.localizedDescription)")
-                    result(FlutterError(code: "INIT_ERROR", message: error.localizedDescription, details: nil))
+            case "initPlayer":
+                if let args = call.arguments as? [String: Any],
+                   let ip = args["ip"] as? String {
+                    self.initVideoPlayer(ip: ip, result: result)
+                } else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing IP address", details: nil))
                 }
                 
-            case "startPlayback":
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        let arguments = call.arguments as? [String: Any]
-                        let ip = arguments?["ip"] as? String ?? "192.168.1.1"
-                        let port = arguments?["port"] as? Int ?? 40005
-                        let bufferSize = arguments?["bufferSize"] as? Int ?? 4096
-                        
-                        NSLog("[DEBUG] Starting playback from \(ip):\(port) with buffer size \(bufferSize)")
-                        
-                        // Disattiva il generatore di frame di test
-                        self.testFrameGeneratorActive = false
-                        
-                        // Imposta la dimensione del buffer
-                        self.videoPlayer?.setBufferSize(bufferSize)
-                        
-                        // Ferma il listener precedente se esiste
-                        self.buttonListener?.stopListening()
-                        self.buttonListener = nil
-                        
-                        // Avvia il listener del pulsante
-                        NSLog("[DEBUG] Creating button listener for \(ip)")
-                        self.buttonListener = ButtonListener(ip: ip)
-                        self.buttonListener?.onButtonPressed = {
-                            NSLog("[DEBUG] Button press event received in AppDelegate")
-                            DispatchQueue.main.async {
-                                methodChannel.invokeMethod("onButtonPressed", arguments: nil)
-                            }
-                        }
-                        
-                        NSLog("[DEBUG] Starting button listener")
-                        self.buttonListener?.startListening()
-                        
-                        // Avvia la riproduzione video
-                        self.videoPlayer?.startPlayback(ip: ip, port: port) { frame in
-                            DispatchQueue.main.async {
-                                methodChannel.invokeMethod("onFrame", arguments: frame)
-                            }
-                        }
-                        
-                        DispatchQueue.main.async {
-                            result(true)
-                        }
-                    } catch {
-                        NSLog("[ERROR] Playback error: \(error.localizedDescription)")
-                        DispatchQueue.main.async {
-                            result(FlutterError(code: "PLAYBACK_ERROR", message: error.localizedDescription, details: nil))
-                        }
+            case "startTestFrameGenerator":
+                testFrameGeneratorActive = true
+                result(true)
+                
+            case "stopTestFrameGenerator":
+                testFrameGeneratorActive = false
+                result(true)
+                
+            case "takePicture":
+                if let videoPlayer = self.videoPlayer {
+                    videoPlayer.takePicture { success in
+                        result(success)
                     }
+                } else {
+                    result(FlutterError(code: "PLAYER_NOT_INIT", message: "Video player not initialized", details: nil))
                 }
                 
-            case "stopPlayback":
-                DispatchQueue.global(qos: .userInitiated).async {
-                    NSLog("[DEBUG] Stopping playback")
-                    self.videoPlayer?.stopPlayback()
-                    DispatchQueue.main.async {
-                        result(true)
-                    }
-                }
-                
-            case "captureFrame":
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        NSLog("[DEBUG] Capturing frame")
-                        if let frameData = self.videoPlayer?.captureCurrentFrame() {
-                            // Salva il frame
-                            let arguments = call.arguments as? [String: Any]
-                            if let savePath = arguments?["savePath"] as? String {
-                                NSLog("[DEBUG] Saving frame to \(savePath)")
-                                try ImageSaver.saveImage(data: frameData, path: savePath)
-                                DispatchQueue.main.async {
-                                    result(savePath)
-                                }
-                            } else {
-                                DispatchQueue.main.async {
-                                    result(nil)
-                                }
-                            }
-                        } else {
-                            DispatchQueue.main.async {
-                                result(FlutterError(code: "CAPTURE_ERROR", message: "No frame available", details: nil))
-                            }
-                        }
-                    } catch {
-                        NSLog("[ERROR] Error capturing frame: \(error.localizedDescription)")
-                        DispatchQueue.main.async {
-                            result(FlutterError(code: "CAPTURE_ERROR", message: error.localizedDescription, details: nil))
-                        }
-                    }
-                }
-                
-            case "testConnection":
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let arguments = call.arguments as? [String: Any]
-                    let ip = arguments?["ip"] as? String ?? "192.168.1.1"
-                    
-                    NSLog("[DEBUG] Testing connection to \(ip)")
-                    
-                    // Test semplificato: prova a creare un socket e connettersi
-                    do {
-                        let testSocket = try Socket(host: ip, port: 40005)
-                        let testData = Data([0x01, 0x02, 0x03])
-                        let writeResult = testSocket.write(testData)
-                        
-                        if writeResult > 0 {
-                            NSLog("[DEBUG] Connection test successful")
-                            testSocket.close()
-                            DispatchQueue.main.async {
-                                result("Connection successful to \(ip)")
-                            }
-                        } else {
-                            NSLog("[DEBUG] Connection test failed")
-                            testSocket.close()
-                            DispatchQueue.main.async {
-                                result("Connection failed to \(ip)")
-                            }
-                        }
-                    } catch {
-                        NSLog("[ERROR] Connection test error: \(error.localizedDescription)")
-                        DispatchQueue.main.async {
-                            result("Connection error: \(error.localizedDescription)")
-                        }
-                    }
-                }
-                
-            case "pingHost":
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let arguments = call.arguments as? [String: Any]
-                    let ip = arguments?["ip"] as? String ?? "192.168.1.1"
-                    
-                    NSLog("[DEBUG] Pinging host \(ip)")
-                    
-                    // Esecuzione del comando ping
-                    NetworkUtility.pingHost(ip) { success, message in
-                        DispatchQueue.main.async {
-                            if success {
-                                result("Ping successful: \(message)")
-                            } else {
-                                result("Ping failed: \(message)")
-                            }
-                        }
-                    }
+            case "ping":
+                if let args = call.arguments as? [String: Any],
+                   let ip = args["ip"] as? String {
+                    self.pingHost(ip: ip, result: result)
+                } else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing IP address", details: nil))
                 }
                 
             case "checkStatus":
                 DispatchQueue.main.async {
                     let status = [
-                        "decoderInitialized": self.videoDecoder != nil,
+                        "decoderInitialized": self.avccDecoder != nil,
                         "playerInitialized": self.videoPlayer != nil,
                         "isPlaying": self.videoPlayer != nil && self.testFrameGeneratorActive
                     ]
@@ -207,7 +76,7 @@ import AVFoundation
             case "generateTestFrame":
                 DispatchQueue.global(qos: .userInitiated).async {
                     self.testFrameGeneratorActive = true
-                    if let testFrame = self.videoDecoder?.getCurrentFrame() {
+                    if let testFrame = self.avccDecoder?.getCurrentFrame() {
                         DispatchQueue.main.async {
                             methodChannel.invokeMethod("onFrame", arguments: testFrame)
                             result(true)
@@ -219,6 +88,23 @@ import AVFoundation
                     }
                 }
                 
+            case "initializeDecoder":
+                if let args = call.arguments as? [String: Any],
+                   let ip = args["ip"] as? String {
+                    self.initVideoPlayer(ip: ip, result: result)
+                } else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing IP address", details: nil))
+                }
+                
+            case "startPlayback":
+                if let args = call.arguments as? [String: Any],
+                   let ip = args["ip"] as? String,
+                   let port = args["port"] as? Int {
+                    self.startVideoPlayback(ip: ip, port: port, result: result)
+                } else {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing IP or port", details: nil))
+                }
+                
             default:
                 result(FlutterMethodNotImplemented)
             }
@@ -227,26 +113,53 @@ import AVFoundation
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
     
-    private func createVideoView(controller: FlutterViewController) {
-        videoView = UIView(frame: CGRect(x: 0, y: 0, width: controller.view.bounds.width, height: controller.view.bounds.height))
-        videoView?.isHidden = true  // Nascondi la view ma mantienila attiva per la decodifica
-        controller.view.addSubview(videoView!)
+    private func initVideoPlayer(ip: String, result: @escaping FlutterResult) {
+        NSLog("[DEBUG] Initializing video player with IP: \(ip)")
+        
+        // Bypassiamo completamente i controlli di raggiungibilità
+        // Non verifichiamo la connettività e procediamo direttamente con l'inizializzazione
+        
+        // Crea un nuovo decoder AVCC
+        let decoder = AVCCDecoder()
+        
+        // Configura il decoder
+        decoder.setDimensions(width: 1280, height: 720)
+        
+        // Crea il video player con il decoder AVCC
+        let player = VideoPlayer(decoder: decoder)
+        player.connect(toHost: ip)
+        
+        // Arresta il listener precedente se esiste
+        buttonListener?.stopListening()
+        
+        // Crea un nuovo listener per i pulsanti
+        let listener = ButtonListener(ip: ip)
+        listener.onButtonPressed = { [weak self, weak player] in
+            guard let player = player else { return }
+            player.takePicture { success in
+                NSLog("[DEBUG] Button pressed - Picture taken: \(success)")
+            }
+        }
+        
+        // Avvia il listener
+        listener.startListening()
+        
+        // Memorizza i riferimenti
+        videoPlayer = player
+        avccDecoder = decoder
+        buttonListener = listener
+        
+        NSLog("[DEBUG] Video player initialized successfully")
+        result(true)
     }
     
-    private func initializeDecoder(width: Int32, height: Int32, bufferSize: Int, result: @escaping FlutterResult) {
-        // Inizializza il VideoDecoder
-        videoDecoder = VideoDecoder(outputView: videoView)
-        if let success = videoDecoder?.initialize(width: width, height: height), success {
-            NSLog("[DEBUG] Decoder initialized successfully")
-            
-            // Inizializza il VideoPlayer
-            videoPlayer = VideoPlayer(decoder: videoDecoder!)
-            videoPlayer?.setBufferSize(bufferSize)
-            
-            result(true)
-        } else {
-            NSLog("[ERROR] Failed to initialize decoder")
-            result(FlutterError(code: "INIT_ERROR", message: "Failed to initialize decoder", details: nil))
+    private func pingHost(ip: String, result: @escaping FlutterResult) {
+        NetworkUtility.pingHost(ip) { success, message in
+            if success {
+                result(true)
+            } else {
+                result(FlutterError(code: "PING_FAILED", message: message, details: nil))
+            }
         }
     }
     
@@ -267,6 +180,44 @@ import AVFoundation
         }
     }
     
+    private func startVideoPlayback(ip: String, port: Int, result: @escaping FlutterResult) {
+        NSLog("[DEBUG] Starting video playback from \(ip):\(port)")
+        
+        // Verifica se il player è inizializzato, altrimenti lo inizializza
+        if videoPlayer == nil {
+            NSLog("[INFO] Player not initialized, initializing now with IP: \(ip)")
+            initVideoPlayer(ip: ip) { initSuccess in
+                if initSuccess as? Bool == true {
+                    self.startVideoPlaybackInternal(ip: ip, port: port, result: result)
+                } else {
+                    result(FlutterError(code: "INIT_FAILED", message: "Player initialization failed", details: nil))
+                }
+            }
+        } else {
+            startVideoPlaybackInternal(ip: ip, port: port, result: result)
+        }
+    }
+    
+    private func startVideoPlaybackInternal(ip: String, port: Int, result: @escaping FlutterResult) {
+        NSLog("[DEBUG] 🎮 Starting video playback with port: \(port)")
+        guard let videoPlayer = self.videoPlayer else {
+            result(FlutterError(code: "PLAYER_NOT_INIT", message: "Video player not initialized", details: nil))
+            return
+        }
+        
+        // Recupera il controller Flutter
+        let controller = window?.rootViewController as! FlutterViewController
+        let methodChannel = FlutterMethodChannel(name: CHANNEL, binaryMessenger: controller.binaryMessenger)
+        
+        // Avvia la riproduzione con una callback per i frame
+        videoPlayer.startPlayback(ip: ip, port: port) { jpegData in
+            // Invia i frame ricevuti a Flutter
+            methodChannel.invokeMethod("onFrame", arguments: jpegData)
+        }
+        
+        result(true)
+    }
+    
     override func applicationWillTerminate(_ application: UIApplication) {
         // Ferma il listener del pulsante
         buttonListener?.stopListening()
@@ -274,8 +225,8 @@ import AVFoundation
         
         // Rilascia le risorse
         videoPlayer?.dispose()
-        videoDecoder?.release()
         
+        // Se utilizziamo AVCCDecoder, aggiungiamo un metodo di pulizia
         super.applicationWillTerminate(application)
     }
 }

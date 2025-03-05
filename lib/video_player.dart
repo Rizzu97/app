@@ -55,9 +55,10 @@ class VideoPlayerState extends State<VideoPlayer> {
   Future<void> _initializePlayer() async {
     try {
       final success = await platform.invokeMethod('initializeDecoder', {
-        'width': 1920, // Aumentato per una migliore risoluzione
-        'height': 1080, // Aumentato per una migliore risoluzione
-        'bufferSize': 8192, // Aumentato per gestire più dati
+        'ip': _deviceIp,
+        'width': 1920,
+        'height': 1080,
+        'bufferSize': 8192,
       });
 
       print('initializeDecoder success: $success');
