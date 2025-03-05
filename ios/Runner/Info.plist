@@ -45,16 +45,16 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>L'app richiede accesso alla fotocamera per inizializzare i componenti di decodifica video</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>L'app potrebbe richiedere accesso al microfono durante la sessione video</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>L'app ha bisogno di accedere alla rete locale per connettersi alle telecamere IP</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_http._tcp</string>
-	</array>
 </dict>
 </plist>

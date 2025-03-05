@@ -1,11 +1,13 @@
 import Foundation
+import Network
 
 class ButtonListener {
     private let ip: String
     private let port: Int
-    private var serverSocket: CFSocket?
-    private var isListening = false
+    private var isListening: Bool = false
     private var listenerThread: Thread?
+    private var socket: Socket?
+    private var serverSocket: NWListener?
     
     // Callback per notificare quando il pulsante viene premuto
     var onButtonPressed: (() -> Void)?
@@ -18,14 +20,14 @@ class ButtonListener {
     
     func startListening() {
         if isListening {
-            print("[DEBUG] Button listener already running")
+            NSLog("[DEBUG] Button listener already running")
             return
         }
         
         isListening = true
         
         listenerThread = Thread {
-            print("[DEBUG] Starting button listener on port \(self.port) in SERVER mode")
+            NSLog("[DEBUG] Starting button listener on port \(self.port) in SERVER mode")
             self.listenForConnections()
         }
         
@@ -33,143 +35,180 @@ class ButtonListener {
     }
     
     private func listenForConnections() {
-        // Crea un socket server
-        var context = CFSocketContext()
-        context.version = 0
-        context.info = Unmanaged.passRetained(self).toOpaque()
+        let tcpOptions = NWProtocolTCP.Options()
         
-        // Callback per le connessioni in entrata
-        let callback: CFSocketCallBack = { socket, callbackType, address, data, info in
-            guard let info = info else { return }
-            let listener = Unmanaged<ButtonListener>.fromOpaque(info).takeUnretainedValue()
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        parameters.allowLocalEndpointReuse = true
+        
+        do {
+            serverSocket = try NWListener(using: parameters, on: NWEndpoint.Port(integerLiteral: UInt16(port)))
             
-            if callbackType == .acceptCallBack {
-                print("[DEBUG] Received connection")
-                if let socketData = data, 
-                   let nativeSocket = socketData.assumingMemoryBound(to: CFSocketNativeHandle.self).pointee as CFSocketNativeHandle? {
-                    listener.handleConnection(socket: nativeSocket)
+            serverSocket?.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    NSLog("[DEBUG] Server socket ready and listening on port \(self.port)")
+                case .failed(let error):
+                    NSLog("[ERROR] Server socket failed: \(error.localizedDescription)")
+                    self.stopListening()
+                default:
+                    break
                 }
             }
+            
+            serverSocket?.newConnectionHandler = { connection in
+                NSLog("[DEBUG] Received connection from \(connection.endpoint)")
+                
+                // Gestisci la connessione
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        NSLog("[DEBUG] Connection ready")
+                        self.handleConnection(connection)
+                    case .failed(let error):
+                        NSLog("[ERROR] Connection failed: \(error.localizedDescription)")
+                        connection.cancel()
+                    case .cancelled:
+                        NSLog("[DEBUG] Connection cancelled")
+                    default:
+                        break
+                    }
+                }
+                
+                connection.start(queue: .global())
+            }
+            
+            serverSocket?.start(queue: .global())
+            
+            // Mantieni il thread in esecuzione finché isListening è true
+            while isListening {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            
+        } catch {
+            NSLog("[ERROR] Failed to create server socket: \(error.localizedDescription)")
         }
-        
-        // Crea il socket server
-        serverSocket = CFSocketCreate(kCFAllocatorDefault,
-                                     PF_INET,
-                                     SOCK_STREAM,
-                                     IPPROTO_TCP,
-                                     CFSocketCallBackType.acceptCallBack.rawValue,
-                                     callback,
-                                     &context)
-        
-        guard let serverSocket = serverSocket else {
-            print("[ERROR] Failed to create server socket")
-            isListening = false
-            return
-        }
-        
-        // Imposta le opzioni del socket
-        var reuse = 1
-        let fileDescriptor = CFSocketGetNative(serverSocket)
-        setsockopt(fileDescriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int>.size))
-        
-        // Crea l'indirizzo del socket
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(port).bigEndian
-        addr.sin_addr.s_addr = INADDR_ANY
-        
-        let addrData = Data(bytes: &addr, count: MemoryLayout<sockaddr_in>.size)
-        
-        // Associa il socket all'indirizzo
-        if CFSocketSetAddress(serverSocket, addrData as CFData) != .success {
-            print("[ERROR] Failed to bind socket to address")
-            CFSocketInvalidate(serverSocket)
-            isListening = false
-            return
-        }
-        
-        print("[DEBUG] Server socket created and bound to port \(port)")
-        
-        // Crea un run loop source per il socket
-        let runLoopSource = CFSocketCreateRunLoopSource(kCFAllocatorDefault, serverSocket, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        
-        // Mantieni il thread in esecuzione
-        while isListening {
-            CFRunLoopRunInMode(.defaultMode, 1, false)
-        }
-        
-        // Pulisci quando termina
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        CFSocketInvalidate(serverSocket)
-        print("[DEBUG] Button listener stopped")
     }
     
-    private func handleConnection(socket: CFSocketNativeHandle) {
-        print("[DEBUG] Handling connection from client")
-        
-        // Crea un file handle per il socket
-        let fileHandle = FileHandle(fileDescriptor: socket, closeOnDealloc: true)
-        
-        // Thread per leggere i dati dal socket
-        DispatchQueue.global(qos: .background).async {
-            while self.isListening {
-                autoreleasepool {
-                    // Leggi i dati dal socket
-                    let data = fileHandle.readData(ofLength: 10)
-                    if data.count == 0 {
-                        print("[DEBUG] End of stream reached")
-                        return
-                    }
-                    
-                    print("[DEBUG] Received \(data.count) bytes")
+    private func handleConnection(_ connection: NWConnection) {
+        func receiveNextMessage() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 10) { content, contentContext, isComplete, error in
+                if let error = error {
+                    NSLog("[ERROR] Error receiving data: \(error.localizedDescription)")
+                    return
+                }
+                
+                if let data = content, !data.isEmpty {
+                    NSLog("[DEBUG] Received \(data.count) bytes")
                     
                     // Stampa i byte ricevuti per debug
                     let hexString = data.map { String(format: "%02X", $0) }.joined(separator: " ")
-                    print("[DEBUG] Received data: \(hexString)")
+                    NSLog("[DEBUG] Received data: \(hexString)")
                     
                     // Analizza il pacchetto - l'ottavo byte (indice 7) indica lo stato del pulsante
                     if data.count >= 8 {
                         let buttonState = Int(data[7])
-                        print("[DEBUG] Received button state: \(buttonState)")
+                        NSLog("[DEBUG] Received button state: \(buttonState)")
                         
                         if buttonState > 0 {
-                            print("[DEBUG] Button pressed!")
+                            NSLog("[DEBUG] Button pressed!")
                             DispatchQueue.main.async {
                                 self.onButtonPressed?()
                             }
                         } else {
-                            print("[DEBUG] Button released!")
+                            NSLog("[DEBUG] Button released!")
                             DispatchQueue.main.async {
                                 self.onButtonReleased?()
                             }
                         }
                     }
                 }
-            }
-            
-            // Chiudi il file handle quando termina
-            #if os(iOS) && compiler(>=5.1)
-                if #available(iOS 13.0, *) {
-                    try? fileHandle.close()
-                } else {
-                    fileHandle.closeFile()
+                
+                if isComplete {
+                    NSLog("[DEBUG] Connection completed")
+                    return
                 }
-            #else
-                fileHandle.closeFile()
-            #endif
+                
+                // Continua a ricevere dati
+                if self.isListening {
+                    receiveNextMessage()
+                }
+            }
         }
+        
+        receiveNextMessage()
     }
     
     func stopListening() {
-        print("[DEBUG] Stopping button listener")
         isListening = false
         
-        // Il thread terminerà automaticamente quando isListening diventa false
+        serverSocket?.cancel()
+        serverSocket = nil
+        
+        socket?.close()
+        socket = nil
+        
+        listenerThread?.cancel()
         listenerThread = nil
+        
+        NSLog("[DEBUG] Button listener stopped")
+    }
+}
+
+// Classe di supporto Socket per la compatibilità
+class Socket {
+    private var connection: NWConnection?
+    
+    init(host: String, port: Int) throws {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(integerLiteral: UInt16(port)))
+        connection = NWConnection(to: endpoint, using: .tcp)
+        connection?.start(queue: .global())
     }
     
-    deinit {
-        stopListening()
+    func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength: Int) -> Int {
+        var result = 0
+        
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        connection?.receive(minimumIncompleteLength: 1, maximumLength: maxLength) { data, _, _, error in
+            if let data = data, !data.isEmpty {
+                data.copyBytes(to: buffer, count: min(data.count, maxLength))
+                result = data.count
+            } else if let error = error {
+                NSLog("[ERROR] Socket read error: \(error.localizedDescription)")
+                result = -1
+            } else {
+                result = 0
+            }
+            
+            semaphore.signal()
+        }
+        
+        _ = semaphore.wait(timeout: .now() + 2)
+        return result
+    }
+    
+    func write(_ data: Data) -> Int {
+        var result = 0
+        
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        connection?.send(content: data, completion: .contentProcessed { error in
+            if let error = error {
+                NSLog("[ERROR] Socket write error: \(error.localizedDescription)")
+                result = -1
+            } else {
+                result = data.count
+            }
+            
+            semaphore.signal()
+        })
+        
+        _ = semaphore.wait(timeout: .now() + 2)
+        return result
+    }
+    
+    func close() {
+        connection?.cancel()
+        connection = nil
     }
 } 

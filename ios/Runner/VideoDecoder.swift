@@ -1,403 +1,292 @@
 import Foundation
-import UIKit
-import VideoToolbox
 import AVFoundation
+import VideoToolbox
+import UIKit
 
 class VideoDecoder {
-    // Callback per ricevere i frame decodificati
-    var onFrameDecoded: ((Data) -> Void)?
-    
-    // Frame corrente
-    private var currentFrame: Data?
-    
-    // Contatori per le statistiche
-    private var frameCount = 0
-    
-    // Decoder H.264
     private var decompressionSession: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
+    private var width: Int32 = 1920
+    private var height: Int32 = 1080
+    private var isInitialized: Bool = false
+    private var frameCounter: Int = 0
     
-    // Buffer per accumulare i dati
-    private var dataBuffer = Data()
+    // Coda per le unità NAL
+    private let nalQueue = DispatchQueue(label: "com.example.a.nalQueue")
+    private var nalBuffer = [Data]()
+    private let maxNalQueueSize = 50
     
-    // Parametri SPS e PPS
-    private var spsData: Data?
-    private var ppsData: Data?
+    // Thread per la decodifica
+    private var decoderThread: Thread?
+    private var isRunning: Bool = false
     
-    // Costanti per i tipi di NAL
-    private let NAL_SLICE: UInt8 = 1
-    private let NAL_IDR_SLICE: UInt8 = 5
-    private let NAL_SPS: UInt8 = 7
-    private let NAL_PPS: UInt8 = 8
+    // Output view
+    private weak var outputView: UIView?
+    private var outputLayer: AVSampleBufferDisplayLayer?
     
-    // Dimensioni del video
-    private var videoWidth = 1920
-    private var videoHeight = 1080
+    // Callback per i frame decodificati
+    var onFrameDecoded: ((Data) -> Void)?
     
-    // Descrizione dei tipi di NALU per debug
-    private let naluTypeStrings = [
-        "0: Unspecified (non-VCL)",
-        "1: Coded slice of a non-IDR picture (VCL) - P frame",
-        "2: Coded slice data partition A (VCL)",
-        "3: Coded slice data partition B (VCL)",
-        "4: Coded slice data partition C (VCL)",
-        "5: Coded slice of an IDR picture (VCL) - I frame",
-        "6: Supplemental enhancement information (SEI) (non-VCL)",
-        "7: Sequence parameter set (non-VCL) - SPS",
-        "8: Picture parameter set (non-VCL) - PPS",
-        "9: Access unit delimiter (non-VCL)",
-        "10: End of sequence (non-VCL)",
-        "11: End of stream (non-VCL)",
-        "12: Filler data (non-VCL)",
-        "13: Sequence parameter set extension (non-VCL)",
-        "14: Prefix NAL unit (non-VCL)",
-        "15: Subset sequence parameter set (non-VCL)",
-        "16: Reserved (non-VCL)",
-        "17: Reserved (non-VCL)",
-        "18: Reserved (non-VCL)",
-        "19: Coded slice of an auxiliary coded picture without partitioning (non-VCL)",
-        "20: Coded slice extension (non-VCL)",
-        "21: Coded slice extension for depth view components (non-VCL)",
-        "22: Reserved (non-VCL)",
-        "23: Reserved (non-VCL)",
-        "24: STAP-A Single-time aggregation packet (non-VCL)",
-        "25: STAP-B Single-time aggregation packet (non-VCL)",
-        "26: MTAP16 Multi-time aggregation packet (non-VCL)",
-        "27: MTAP24 Multi-time aggregation packet (non-VCL)",
-        "28: FU-A Fragmentation unit (non-VCL)",
-        "29: FU-B Fragmentation unit (non-VCL)",
-        "30: Unspecified (non-VCL)",
-        "31: Unspecified (non-VCL)"
-    ]
-    
-    func initialize(width: Int, height: Int) -> Bool {
-        print("[DEBUG] Initializing decoder with width: \(width), height: \(height)")
-        videoWidth = width
-        videoHeight = height
-        frameCount = 0
-        return true
+    init(outputView: UIView?) {
+        self.outputView = outputView
+        setupOutputLayer()
     }
     
-    func queueNalUnit(nalUnit: Data) {
-        // Aggiungi i dati al buffer
-        dataBuffer.append(nalUnit)
+    private func setupOutputLayer() {
+        guard let outputView = outputView else { return }
         
-        // Cerca NAL units nel buffer
-        processBuffer()
-    }
-    
-    private func processBuffer() {
-        // Cerca il pattern di inizio NAL (0x00 0x00 0x00 0x01)
-        var searchIndex = 0
+        let layer = AVSampleBufferDisplayLayer()
+        layer.videoGravity = .resizeAspect
+        layer.frame = outputView.bounds
         
-        while searchIndex < dataBuffer.count - 4 {
-            // Cerca l'inizio di un NAL
-            if dataBuffer[searchIndex] == 0x00 && 
-               dataBuffer[searchIndex + 1] == 0x00 && 
-               dataBuffer[searchIndex + 2] == 0x00 && 
-               dataBuffer[searchIndex + 3] == 0x01 {
-                
-                // Abbiamo trovato l'inizio di un NAL
-                let nalType = dataBuffer[searchIndex + 4] & 0x1F
-                
-                // Cerca l'inizio del prossimo NAL
-                var nextNalIndex = searchIndex + 4
-                while nextNalIndex < dataBuffer.count - 4 {
-                    if dataBuffer[nextNalIndex] == 0x00 && 
-                       dataBuffer[nextNalIndex + 1] == 0x00 && 
-                       dataBuffer[nextNalIndex + 2] == 0x00 && 
-                       dataBuffer[nextNalIndex + 3] == 0x01 {
-                        break
-                    }
-                    nextNalIndex += 1
-                }
-                
-                // Se abbiamo trovato un NAL completo
-                if nextNalIndex < dataBuffer.count - 4 || nalType == NAL_SPS || nalType == NAL_PPS {
-                    let nalEndIndex = nextNalIndex < dataBuffer.count - 4 ? nextNalIndex : dataBuffer.count
-                    let nalData = dataBuffer.subdata(in: searchIndex..<nalEndIndex)
-                    
-                    // Processa il NAL in base al tipo
-                    switch nalType {
-                    case NAL_SPS:
-                        print("[DEBUG] Found SPS NAL")
-                        spsData = nalData
-                        
-                    case NAL_PPS:
-                        print("[DEBUG] Found PPS NAL")
-                        ppsData = nalData
-                        
-                        // Se abbiamo sia SPS che PPS, possiamo configurare il decoder
-                        if spsData != nil && ppsData != nil {
-                            createDecompressionSession()
-                        }
-                        
-                    case NAL_IDR_SLICE:
-                        print("[DEBUG] Found IDR frame (I-frame)")
-                        if decompressionSession != nil {
-                            decodeFrame(nalData)
-                        } else {
-                            print("[DEBUG] Skipping IDR frame, no decompression session")
-                        }
-                        
-                    case NAL_SLICE:
-                        print("[DEBUG] Found non-IDR frame (P-frame)")
-                        if decompressionSession != nil {
-                            decodeFrame(nalData)
-                        } else {
-                            print("[DEBUG] Skipping P-frame, no decompression session")
-                        }
-                        
-                    default:
-                        print("[DEBUG] Ignoring NAL type \(nalType)")
-                    }
-                    
-                    // Rimuovi i dati processati dal buffer
-                    if nextNalIndex < dataBuffer.count - 4 {
-                        searchIndex = nextNalIndex
-                    } else {
-                        dataBuffer.removeSubrange(0..<nalEndIndex)
-                        searchIndex = 0
-                    }
-                } else {
-                    // NAL incompleto, aspetta più dati
-                    break
-                }
-            } else {
-                searchIndex += 1
-            }
-        }
-        
-        // Se abbiamo processato abbastanza dati, pulisci il buffer
-        if dataBuffer.count > 1_000_000 {  // 1MB
-            dataBuffer.removeAll()
+        DispatchQueue.main.async {
+            outputView.layer.addSublayer(layer)
+            self.outputLayer = layer
         }
     }
     
-    private func createDecompressionSession() {
-        guard let spsData = spsData, let ppsData = ppsData else {
-            print("[ERROR] Cannot create decompression session without SPS and PPS")
-            return
+    func initialize(width: Int32, height: Int32) -> Bool {
+        NSLog("[DEBUG] Initializing decoder with width: \(width), height: \(height)")
+        
+        self.width = width
+        self.height = height
+        
+        do {
+            try setupDecompressionSession()
+            isInitialized = true
+            startDecoderThread()
+            return true
+        } catch {
+            NSLog("[ERROR] Error initializing decoder: \(error.localizedDescription)")
+            return false
         }
+    }
+    
+    private func setupDecompressionSession() throws {
+        // Parametri per il formato H.264
+        let parameterSetPointers: [UnsafePointer<UInt8>?] = []
+        let parameterSetSizes: [Int] = []
         
-        print("[DEBUG] Creating decompression session with SPS (\(spsData.count) bytes) and PPS (\(ppsData.count) bytes)")
-        
-        // Pulisci la sessione precedente
-        if decompressionSession != nil {
-            VTDecompressionSessionInvalidate(decompressionSession!)
-            decompressionSession = nil
-        }
-        
-        // Estrai i dati SPS e PPS (salta il codice di inizio 0x00 0x00 0x00 0x01)
-        let spsStart = spsData.startIndex + 4
-        let spsSize = spsData.count - 4
-        let ppsStart = ppsData.startIndex + 4
-        let ppsSize = ppsData.count - 4
-        
-        // Crea i parametri per il formato di descrizione
-        var parameterSetPointers: [UnsafePointer<UInt8>] = []
-        var parameterSetSizes: [Int] = []
-        
-        spsData.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
-            if let baseAddress = bytes.baseAddress {
-                parameterSetPointers.append(baseAddress.assumingMemoryBound(to: UInt8.self) + 4)
-                parameterSetSizes.append(spsSize)
-            }
-        }
-        
-        ppsData.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
-            if let baseAddress = bytes.baseAddress {
-                parameterSetPointers.append(baseAddress.assumingMemoryBound(to: UInt8.self) + 4)
-                parameterSetSizes.append(ppsSize)
-            }
-        }
-        
-        // Crea il formato di descrizione video
-        var formatDesc: CMVideoFormatDescription?
-        let status = parameterSetPointers.withUnsafeBufferPointer { pointers in
-            parameterSetSizes.withUnsafeBufferPointer { sizes in
-                CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                    allocator: kCFAllocatorDefault,
-                    parameterSetCount: 2,
-                    parameterSetPointers: pointers.baseAddress!,
-                    parameterSetSizes: sizes.baseAddress!,
-                    nalUnitHeaderLength: 4,
-                    formatDescriptionOut: &formatDesc
-                )
-            }
-        }
-        
-        if status != noErr {
-            print("[ERROR] Failed to create format description: \(status)")
-            return
-        }
-        
-        self.formatDescription = formatDesc
-        
-        // Crea il callback per la decompressione
-        var outputCallback = VTDecompressionOutputCallbackRecord()
-        outputCallback.decompressionOutputCallback = { (decompressionOutputRefCon, sourceFrameRefCon, status, infoFlags, imageBuffer, presentationTimeStamp, duration) in
-            let decoder = unsafeBitCast(decompressionOutputRefCon, to: VideoDecoder.self)
-            
-            if status != noErr {
-                print("[ERROR] Decompression failed: \(status)")
-                return
-            }
-            
-            guard let imageBuffer = imageBuffer else {
-                print("[ERROR] No image buffer")
-                return
-            }
-            
-            // Converti il CVPixelBuffer in UIImage
-            if let image = decoder.createUIImage(from: imageBuffer) {
-                if let jpegData = image.jpegData(compressionQuality: 0.8) {
-                    decoder.currentFrame = jpegData
-                    DispatchQueue.main.async {
-                        decoder.onFrameDecoded?(jpegData)
-                    }
-                }
-            }
-        }
-        
-        outputCallback.decompressionOutputRefCon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        
-        // Crea la sessione di decompressione
-        let decoderSpecification: [String: Any] = [:]
-        let destinationImageBufferAttributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: videoWidth,
-            kCVPixelBufferHeightKey as String: videoHeight,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-        ]
-        
-        var session: VTDecompressionSession?
-        let sessionStatus = VTDecompressionSessionCreate(
+        // Creare la descrizione del formato video
+        var status = CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
-            formatDescription: formatDesc!,
-            decoderSpecification: decoderSpecification as CFDictionary,
-            imageBufferAttributes: destinationImageBufferAttributes as CFDictionary,
-            outputCallback: &outputCallback,
-            decompressionSessionOut: &session
+            codecType: kCMVideoCodecType_H264,
+            width: width,
+            height: height,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
         )
         
-        if sessionStatus != noErr {
-            print("[ERROR] Failed to create decompression session: \(sessionStatus)")
-            return
+        if status != noErr {
+            throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to create format description"])
         }
         
-        decompressionSession = session
-        print("[DEBUG] Decompression session created successfully")
+        // Callback per la decodifica
+        let decoderCallback: VTDecompressionOutputCallback = { decompressionOutputRefCon, sourceFrameRefCon, status, infoFlags, imageBuffer, presentationTimeStamp, duration in
+            guard let refCon = decompressionOutputRefCon else { return }
+            
+            let decoder = Unmanaged<VideoDecoder>.fromOpaque(refCon).takeUnretainedValue()
+            decoder.handleDecodedFrame(status: status, imageBuffer: imageBuffer)
+        }
+        
+        // Attributi di decodifica
+        let decoderParameters = NSMutableDictionary()
+        let destinationAttributes = NSMutableDictionary()
+        
+        // Formato pixel per l'output
+        destinationAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_32BGRA
+        
+        // Creare la sessione di decompressione
+        var outputCallback = VTDecompressionOutputCallbackRecord(
+            decompressionOutputCallback: decoderCallback,
+            decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()
+        )
+        
+        guard let formatDescription = formatDescription else {
+            throw NSError(domain: "VideoDecoder", code: -1, userInfo: [NSLocalizedDescriptionKey: "Format description is nil"])
+        }
+        
+        status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            formatDescription: formatDescription,
+            decoderSpecification: decoderParameters,
+            imageBufferAttributes: destinationAttributes,
+            outputCallback: &outputCallback,
+            decompressionSessionOut: &decompressionSession
+        )
+        
+        if status != noErr {
+            throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to create decompression session"])
+        }
+        
+        NSLog("[DEBUG] Decompression session created successfully")
     }
     
-    private func decodeFrame(_ frameData: Data) {
-        guard let decompressionSession = decompressionSession,
-              let formatDescription = formatDescription else {
-            print("[DEBUG] Cannot decode frame: missing decompression session or format description")
+    private func startDecoderThread() {
+        isRunning = true
+        
+        decoderThread = Thread {
+            NSLog("[DEBUG] Decoder thread started")
+            
+            while self.isRunning {
+                autoreleasepool {
+                    var nalUnit: Data?
+                    
+                    // Prelevare un'unità NAL dalla coda
+                    self.nalQueue.sync {
+                        if !self.nalBuffer.isEmpty {
+                            nalUnit = self.nalBuffer.removeFirst()
+                        }
+                    }
+                    
+                    if let nalData = nalUnit {
+                        self.decodeNalUnit(nalData)
+                    } else {
+                        // Attendi un po' se non ci sono dati
+                        Thread.sleep(forTimeInterval: 0.01)
+                    }
+                }
+            }
+            
+            NSLog("[DEBUG] Decoder thread stopped")
+        }
+        
+        decoderThread?.start()
+    }
+    
+    func queueNalUnit(_ nalUnit: Data) {
+        guard isInitialized else {
+            NSLog("[ERROR] Decoder not initialized")
             return
         }
         
-        // Converti il NAL in formato AVCC (sostituisci il codice di inizio con la lunghezza)
-        var avccData = Data()
-        let nalDataSize = frameData.count - 4  // Escludi il codice di inizio
-        var nalSize = UInt32(nalDataSize).bigEndian
-        avccData.append(Data(bytes: &nalSize, count: 4))
-        avccData.append(frameData.subdata(in: 4..<frameData.count))
+        nalQueue.sync {
+            if nalBuffer.count < maxNalQueueSize {
+                nalBuffer.append(nalUnit)
+            } else {
+                NSLog("[WARN] Decoder queue full, dropping NAL unit")
+                // Rimuovere il più vecchio
+                nalBuffer.removeFirst()
+                nalBuffer.append(nalUnit)
+            }
+        }
+    }
+    
+    private func decodeNalUnit(_ nalUnit: Data) {
+        guard isInitialized, let decompressionSession = decompressionSession else {
+            NSLog("[ERROR] Decoder not initialized or decompression session is nil")
+            return
+        }
         
-        // Crea un CMBlockBuffer dal frame data
-        var blockBuffer: CMBlockBuffer?
-        let blockBufferStatus = avccData.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> OSStatus in
-            guard let baseAddress = bytes.baseAddress else { return kCMBlockBufferStructureAllocationFailedErr }
-            return CMBlockBufferCreateWithMemoryBlock(
+        do {
+            // Creare il buffer di blocco
+            var blockBuffer: CMBlockBuffer?
+            var status = CMBlockBufferCreateWithMemoryBlock(
                 allocator: kCFAllocatorDefault,
                 memoryBlock: nil,
-                blockLength: avccData.count,
-                blockAllocator: nil,
+                blockLength: nalUnit.count,
+                blockAllocator: kCFAllocatorDefault,
                 customBlockSource: nil,
                 offsetToData: 0,
-                dataLength: avccData.count,
+                dataLength: nalUnit.count,
                 flags: 0,
                 blockBufferOut: &blockBuffer
             )
-        }
-        
-        if blockBufferStatus != noErr {
-            print("[ERROR] Failed to create block buffer: \(blockBufferStatus)")
-            return
-        }
-        
-        // Copia i dati nel block buffer
-        let copyStatus = avccData.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> OSStatus in
-            guard let baseAddress = bytes.baseAddress else { return kCMBlockBufferStructureAllocationFailedErr }
-            return CMBlockBufferReplaceDataBytes(
-                with: baseAddress,
+            
+            if status != kCMBlockBufferNoErr {
+                throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to create block buffer"])
+            }
+            
+            // Copiare i dati nel buffer
+            status = CMBlockBufferReplaceDataBytes(
+                with: (nalUnit as NSData).bytes,
                 blockBuffer: blockBuffer!,
                 offsetIntoDestination: 0,
-                dataLength: avccData.count
+                dataLength: nalUnit.count
             )
-        }
-        
-        if copyStatus != noErr {
-            print("[ERROR] Failed to copy data to block buffer: \(copyStatus)")
-            return
-        }
-        
-        // Crea un CMSampleBuffer dal block buffer
-        var sampleBuffer: CMSampleBuffer?
-        var sampleSizeArray = [avccData.count]
-        let sampleBufferStatus = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: blockBuffer,
-            formatDescription: formatDescription,
-            sampleCount: 1,
-            sampleTimingEntryCount: 0,
-            sampleTimingArray: nil,
-            sampleSizeEntryCount: 1,
-            sampleSizeArray: &sampleSizeArray,
-            sampleBufferOut: &sampleBuffer
-        )
-        
-        if sampleBufferStatus != noErr {
-            print("[ERROR] Failed to create sample buffer: \(sampleBufferStatus)")
-            return
-        }
-        
-        // Imposta gli attributi del sample buffer
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer!, createIfNecessary: true) {
-            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
-            CFDictionarySetValue(dict, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
-        }
-        
-        // Decodifica il frame
-        let flags = VTDecodeFrameFlags._EnableAsynchronousDecompression
-        let decodeStatus = VTDecompressionSessionDecodeFrame(
-            decompressionSession,
-            sampleBuffer: sampleBuffer!,
-            flags: flags,
-            frameRefcon: nil,
-            infoFlagsOut: nil
-        )
-        
-        if decodeStatus != noErr {
-            print("[ERROR] Failed to decode frame: \(decodeStatus)")
             
-            // Se l'errore è grave, ricreiamo il decoder
-            if decodeStatus == kVTInvalidSessionErr || decodeStatus == kVTVideoDecoderBadDataErr {
-                print("[DEBUG] Recreating decoder due to serious error")
-                createDecompressionSession()
+            if status != kCMBlockBufferNoErr {
+                throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to copy data to block buffer"])
+            }
+            
+            // Creare il sample buffer
+            var sampleBuffer: CMSampleBuffer?
+            var sampleSizeArray = [nalUnit.count]
+            
+            status = CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: blockBuffer,
+                formatDescription: formatDescription,
+                sampleCount: 1,
+                sampleTimingEntryCount: 0,
+                sampleTimingArray: nil,
+                sampleSizeEntryCount: 1,
+                sampleSizeArray: &sampleSizeArray,
+                sampleBufferOut: &sampleBuffer
+            )
+            
+            if status != noErr {
+                throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to create sample buffer"])
+            }
+            
+            // Decodificare il frame
+            let flagsOut = UnsafeMutablePointer<VTDecodeInfoFlags>.allocate(capacity: 1)
+            flagsOut.initialize(to: [])
+            
+            status = VTDecompressionSessionDecodeFrame(
+                decompressionSession,
+                sampleBuffer: sampleBuffer!,
+                flags: [._EnableAsynchronousDecompression],
+                frameRefcon: nil,
+                infoFlagsOut: flagsOut
+            )
+            
+            if status != noErr {
+                NSLog("[ERROR] Failed to decode frame: \(status)")
+            }
+            
+            flagsOut.deallocate()
+            
+        } catch {
+            NSLog("[ERROR] Error decoding NAL unit: \(error.localizedDescription)")
+        }
+    }
+    
+    private func handleDecodedFrame(status: OSStatus, imageBuffer: CVImageBuffer?) {
+        guard status == noErr, let imageBuffer = imageBuffer else {
+            NSLog("[ERROR] Error decoding frame or imageBuffer is nil")
+            return
+        }
+        
+        // Convertire il CVImageBuffer in UIImage e quindi in Data
+        if let jpegData = createJPEGFromImageBuffer(imageBuffer) {
+            // Inviare i dati attraverso il callback
+            DispatchQueue.main.async {
+                self.onFrameDecoded?(jpegData)
+            }
+            
+            // Se c'è un layer di output, aggiornarlo
+            if let outputLayer = outputLayer, let formatDescription = formatDescription {
+                do {
+                    let sampleBuffer = try createSampleBufferFrom(imageBuffer: imageBuffer, formatDescription: formatDescription)
+                    DispatchQueue.main.async {
+                        outputLayer.enqueue(sampleBuffer)
+                    }
+                } catch {
+                    NSLog("[ERROR] Failed to create sample buffer for display: \(error.localizedDescription)")
+                }
             }
         }
     }
     
-    private func createUIImage(from pixelBuffer: CVPixelBuffer) -> UIImage? {
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    private func createJPEGFromImageBuffer(_ imageBuffer: CVImageBuffer) -> Data? {
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
         
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-        let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        let baseAddress = CVPixelBufferGetBaseAddress(imageBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
         
@@ -410,60 +299,127 @@ class VideoDecoder {
             space: colorSpace,
             bitmapInfo: bitmapInfo.rawValue
         ) else {
-            return nil
+            NSLog("[ERROR] Failed to create CGContext")
+            return createErrorImage()
         }
         
         guard let cgImage = context.makeImage() else {
-            return nil
+            NSLog("[ERROR] Failed to create CGImage")
+            return createErrorImage()
         }
         
-        return UIImage(cgImage: cgImage)
+        let uiImage = UIImage(cgImage: cgImage)
+        return uiImage.jpegData(compressionQuality: 0.9)
+    }
+    
+    private func createSampleBufferFrom(imageBuffer: CVImageBuffer, formatDescription: CMFormatDescription) throws -> CMSampleBuffer {
+        var sampleBuffer: CMSampleBuffer?
+        var timingInfo = CMSampleTimingInfo(duration: CMTime.invalid, presentationTimeStamp: CMTime(), decodeTimeStamp: CMTime.invalid)
+        
+        let status = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: imageBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timingInfo,
+            sampleBufferOut: &sampleBuffer
+        )
+        
+        if status != noErr {
+            throw NSError(domain: "VideoDecoder", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to create sample buffer from image buffer"])
+        }
+        
+        return sampleBuffer!
     }
     
     func getCurrentFrame() -> Data? {
-        return currentFrame
+        // Per test, generare un'immagine di test
+        return createTestImage()
     }
     
-    // Metodo per mostrare un'immagine di debug
-    func showDebugImage(message: String) {
+    private func createTestImage() -> Data {
         let size = CGSize(width: 640, height: 480)
-        UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
+        UIGraphicsBeginImageContextWithOptions(size, true, 1.0)
         defer { UIGraphicsEndImageContext() }
         
-        guard let context = UIGraphicsGetCurrentContext() else { return }
+        let context = UIGraphicsGetCurrentContext()!
         
-        // Sfondo nero
-        context.setFillColor(UIColor.black.cgColor)
+        // Sfondo grigio scuro
+        context.setFillColor(UIColor.darkGray.cgColor)
         context.fill(CGRect(origin: .zero, size: size))
         
-        // Attributi del testo
+        // Testo bianco
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .left
+        
+        let timeString = DateFormatter()
+        timeString.dateFormat = "HH:mm:ss.SSS"
+        
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.boldSystemFont(ofSize: 24),
-            .foregroundColor: UIColor.white
+            .font: UIFont.systemFont(ofSize: 24),
+            .foregroundColor: UIColor.white,
+            .paragraphStyle: paragraphStyle
         ]
         
-        // Disegna il messaggio
-        let rect = CGRect(x: 20, y: size.height/2 - 50, width: size.width - 40, height: 100)
-        message.draw(in: rect, withAttributes: attributes)
+        "Captured Frame".draw(at: CGPoint(x: 20, y: 50), withAttributes: attributes)
+        "Time: \(timeString.string(from: Date()))".draw(at: CGPoint(x: 20, y: 90), withAttributes: attributes)
+        "Frame #: \(frameCounter)".draw(at: CGPoint(x: 20, y: 130), withAttributes: attributes)
         
-        guard let image = UIGraphicsGetImageFromCurrentImageContext() else { return }
-        if let jpegData = image.jpegData(compressionQuality: 0.9) {
-            DispatchQueue.main.async {
-                self.onFrameDecoded?(jpegData)
-            }
-        }
+        frameCounter += 1
+        
+        let image = UIGraphicsGetImageFromCurrentImageContext()!
+        return image.jpegData(compressionQuality: 0.9)!
     }
-}
-
-// Estensione per Data per facilitare la ricerca di byte
-extension Data {
-    func firstIndex(of byte: UInt8, in range: Range<Int>, where condition: (Int) -> Bool) -> Int? {
-        for i in range {
-            if self[i] == byte && condition(i) {
-                return i
-            }
+    
+    private func createErrorImage() -> Data? {
+        let size = CGSize(width: 320, height: 240)
+        UIGraphicsBeginImageContextWithOptions(size, true, 1.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        let context = UIGraphicsGetCurrentContext()!
+        
+        // Sfondo rosso
+        context.setFillColor(UIColor.red.cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+        
+        // Testo bianco
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 20),
+            .foregroundColor: UIColor.white,
+            .paragraphStyle: paragraphStyle
+        ]
+        
+        "Error capturing frame".draw(at: CGPoint(x: 20, y: 110), withAttributes: attributes)
+        
+        let image = UIGraphicsGetImageFromCurrentImageContext()!
+        return image.jpegData(compressionQuality: 0.7)
+    }
+    
+    func release() {
+        isRunning = false
+        
+        // Attendere che il thread si fermi
+        decoderThread?.cancel()
+        
+        // Rilasciare le risorse
+        if let decompressionSession = decompressionSession {
+            VTDecompressionSessionInvalidate(decompressionSession)
+            self.decompressionSession = nil
         }
-        return nil
+        
+        formatDescription = nil
+        isInitialized = false
+        
+        // Rimuovere il layer di output
+        DispatchQueue.main.async {
+            self.outputLayer?.removeFromSuperlayer()
+            self.outputLayer = nil
+        }
+        
+        nalQueue.sync {
+            nalBuffer.removeAll()
+        }
     }
 } 
-
